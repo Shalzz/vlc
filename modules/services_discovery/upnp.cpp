@@ -147,6 +147,22 @@ vlc_module_begin()
 
     VLC_RD_PROBE_SUBMODULE
 
+    add_submodule()
+        set_shortname("dlna")
+        set_description(N_("UPnP/DLNA stream output"))
+        set_capability("sout stream", 0)
+        add_shortcut("dlna")
+        set_category(CAT_SOUT)
+        set_subcategory(SUBCAT_SOUT_STREAM)
+        set_callbacks(Sout::OpenSout, Sout::CloseSout)
+
+        add_string(SOUT_CFG_PREFIX "ip", NULL, IP_ADDR_TEXT, IP_ADDR_LONGTEXT, false)
+        add_integer(SOUT_CFG_PREFIX "port", UPNP_CONTROL_PORT, PORT_TEXT, PORT_LONGTEXT, false)
+        add_integer(SOUT_CFG_PREFIX "http-port", HTTP_PORT, HTTP_PORT_TEXT, HTTP_PORT_LONGTEXT, false)
+        add_bool(SOUT_CFG_PREFIX "video", true, HAS_VIDEO_TEXT, HAS_VIDEO_LONGTEXT, false)
+        add_string(SOUT_CFG_PREFIX "mux", DEFAULT_MUXER, MUX_TEXT, MUX_LONGTEXT, false)
+        add_string(SOUT_CFG_PREFIX "mime", "video/x-matroska", MIME_TEXT, MIME_LONGTEXT, false)
+        add_string(SOUT_CFG_PREFIX "url", NULL, URL_TEXT, URL_LONGTEXT, false)
 vlc_module_end()
 
 /*
