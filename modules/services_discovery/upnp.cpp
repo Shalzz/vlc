@@ -196,7 +196,7 @@ SearchThread( void *p_data )
 
     /* Search for Sat Ip servers*/
     i_res = UpnpSearchAsync( p_sys->p_upnp->handle(), 5,
-            SATIP_SERVER_DEVICE_TYPE, MEDIA_SERVER_DEVICE_TYPE );
+            SATIP_SERVER_DEVICE_TYPE, SATIP_SERVER_DEVICE_TYPE );
     if( i_res != UPNP_E_SUCCESS )
         msg_Err( p_sd, "Error sending search request: %s", UpnpGetErrorMessage( i_res ) );
     return NULL;
@@ -699,7 +699,8 @@ void MediaServerList::removeServer( const std::string& udn )
  */
 int MediaServerList::onEvent( Upnp_EventType event_type, UpnpEventPtr p_event, void* p_user_data )
 {
-    if (p_user_data != MEDIA_SERVER_DEVICE_TYPE)
+    if (p_user_data != MEDIA_SERVER_DEVICE_TYPE &&
+            p_user_data != SATIP_SERVER_DEVICE_TYPE)
         return 0;
 
     switch( event_type )
