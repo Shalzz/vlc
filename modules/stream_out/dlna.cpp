@@ -355,6 +355,105 @@ char *MediaRenderer::getServiceURL(const char* type, const char *service)
     return NULL;
 }
 
+int MediaRenderer::parseAVTransportState(IXML_Document* event)
+{
+    IXML_NodeList* instance_id_list =
+        ixmlDocument_getElementsByTagName(event, "InstanceID");
+
+    // We have only one instance id for now.
+    IXML_Element * instance_id_element =
+            (IXML_Element*) ixmlNodeList_item(instance_id_list, 0 );
+    if (!instance_id_element)
+        return 0;
+
+    IXML_NodeList* transport_state_list =
+        ixmlElement_getElementsByTagName(instance_id_element, "TransportState");
+    IXML_Element* transport_state_element =
+            (IXML_Element*) ixmlNodeList_item(transport_state_list, 0 );
+    if (!transport_state_element)
+        return 0;
+    const char* transport_state =
+        ixmlElement_getAttribute(transport_state_element, "val");
+    msg_Dbg(parent, "transport state : %s", transport_state);
+
+    if (!strncmp(transport_state, "PLAYING", strlen(transport_state)))
+    {
+        return VLC_SUCCESS;
+    }
+    else if (!strncmp(transport_state, "TRANSITIONING", strlen(transport_state)))
+    {
+        return VLC_SUCCESS;
+    }
+    else if (!strncmp(transport_state, "STOPPED", strlen(transport_state)))
+    {
+        return VLC_SUCCESS;
+    }
+    else if (!strncmp(transport_state, "NO_MEDIA_PRESENT", strlen(transport_state)))
+    {
+        return VLC_SUCCESS;
+    }
+
+    return VLC_SUCCESS;
+}
+
+int MediaRenderer::onEvent( Upnp_EventType event_type,
+                            UpnpEventPtr Event,
+                            void *p_user_data )
+{
+    if (p_user_data != NULL)
+        return UPNP_E_SUCCESS;
+
+    switch (event_type)
+    {
+        case UPNP_EVENT_SUBSCRIBE_COMPLETE:
+        {
+            Upnp_Event_Subscribe *subscription = (Upnp_Event_Subscribe*) Event;
+            msg_Info( parent, "subscription complete for %s",
+                        subscription->PublisherUrl );
+        }
+        break;
+
+        case UPNP_EVENT_RECEIVED:
+        {
+            Upnp_Event *subscription_event = (Upnp_Event*) Event;
+            IXML_NodeList* last_change_list =
+                ixmlDocument_getElementsByTagName(
+                        subscription_event->ChangedVariables, "e:property");
+
+            // AVTransport has only one Eventable StateVariable
+            IXML_Element* last_change_element =
+                    (IXML_Element*) ixmlNodeList_item(last_change_list, 0 );
+            if (!last_change_element)
+                return 0;
+
+            const char *state_variables =
+                xml_getChildElementValue(last_change_element, "LastChange");
+            IXML_Document *state_variables_xml = ixmlParseBuffer(state_variables);
+            parseAVTransportState(state_variables_xml);
+
+            msg_Dbg( parent, "Got subscription event: %d for sid: %s",
+                        subscription_event->EventKey, subscription_event->Sid);
+        }
+        break;
+        case UPNP_EVENT_AUTORENEWAL_FAILED:
+        case UPNP_EVENT_SUBSCRIPTION_EXPIRED:
+        {
+            msg_Err( parent, "UPNP subscription expired" );
+        }
+        break;
+        case UPNP_DISCOVERY_ADVERTISEMENT_ALIVE:
+            // Ignore
+        break;
+
+        default:
+        {
+            msg_Err( parent, "Unhandled event, type=%d ", event_type );
+        }
+        break;
+    }
+    return UPNP_E_SUCCESS;
+}
+
 int MediaRenderer::Play(const char *speed)
 {
     IXML_Document* p_action = NULL;
@@ -381,6 +480,28 @@ int MediaRenderer::Play(const char *speed)
     return VLC_SUCCESS;
 }
 
+int MediaRenderer::Pause()
+{
+    IXML_Document* p_action = NULL;
+    IXML_Document* p_response = NULL;
+    int i_res;
+    const char *urn = AV_TRANSPORT_SERVICE_TYPE;
+
+    i_res = UpnpAddToAction( &p_action, "Pause",
+            urn, "InstanceID", "0");
+    if (i_res != UPNP_E_SUCCESS)
+        return VLC_EGENERIC;
+    char *actionUrl = getServiceURL(urn, "controlURL");
+    if (actionUrl == NULL)
+        return VLC_EGENERIC;
+    i_res = UpnpSendAction(handle, actionUrl, urn, NULL, p_action, &p_response);
+    if (i_res != UPNP_E_SUCCESS)
+        return VLC_EGENERIC;
+    ixmlDocument_free(p_response);
+    ixmlDocument_free(p_action);
+    return VLC_SUCCESS;
+}
+
 int MediaRenderer::Stop()
 {
     IXML_Document* p_action = NULL;
@@ -389,6 +510,50 @@ int MediaRenderer::Stop()
     const char *urn = AV_TRANSPORT_SERVICE_TYPE;
 
     i_res = UpnpAddToAction( &p_action, "Stop",
+            urn, "InstanceID", "0");
+    if (i_res != UPNP_E_SUCCESS)
+        return VLC_EGENERIC;
+    char *actionUrl = getServiceURL(urn, "controlURL");
+    if (actionUrl == NULL)
+        return VLC_EGENERIC;
+    i_res = UpnpSendAction(handle, actionUrl, urn, NULL, p_action, &p_response);
+    if (i_res != UPNP_E_SUCCESS)
+        return VLC_EGENERIC;
+    ixmlDocument_free(p_response);
+    ixmlDocument_free(p_action);
+    return VLC_SUCCESS;
+}
+
+int MediaRenderer::Next()
+{
+    IXML_Document* p_action = NULL;
+    IXML_Document* p_response = NULL;
+    int i_res;
+    const char *urn = AV_TRANSPORT_SERVICE_TYPE;
+
+    i_res = UpnpAddToAction( &p_action, "Next",
+            urn, "InstanceID", "0");
+    if (i_res != UPNP_E_SUCCESS)
+        return VLC_EGENERIC;
+    char *actionUrl = getServiceURL(urn, "controlURL");
+    if (actionUrl == NULL)
+        return VLC_EGENERIC;
+    i_res = UpnpSendAction(handle, actionUrl, urn, NULL, p_action, &p_response);
+    if (i_res != UPNP_E_SUCCESS)
+        return VLC_EGENERIC;
+    ixmlDocument_free(p_response);
+    ixmlDocument_free(p_action);
+    return VLC_SUCCESS;
+}
+
+int MediaRenderer::Previous()
+{
+    IXML_Document* p_action = NULL;
+    IXML_Document* p_response = NULL;
+    int i_res;
+    const char *urn = AV_TRANSPORT_SERVICE_TYPE;
+
+    i_res = UpnpAddToAction( &p_action, "Previous",
             urn, "InstanceID", "0");
     if (i_res != UPNP_E_SUCCESS)
         return VLC_EGENERIC;
@@ -513,10 +678,17 @@ int MediaRenderer::Subscribe()
     int timeout = 5;
     int i_res;
 
-    char *url = getServiceURL("urn:schemas-upnp-org:service:RenderingControl:1", "eventSubURL");
-    i_res = UpnpSubscribe(handle, url, &timeout, sid);
+    char *AVurl = getServiceURL("urn:schemas-upnp-org:service:AVTransport:1",
+                    "eventSubURL");
+    i_res = UpnpSubscribe(handle, AVurl, &timeout, sid);
     if (i_res != UPNP_E_SUCCESS)
         return VLC_EGENERIC;
+    char *RCurl = getServiceURL("urn:schemas-upnp-org:service:RenderingControl:1",
+                    "eventSubURL");
+    i_res = UpnpSubscribe(handle, RCurl, &timeout, sid);
+    if (i_res != UPNP_E_SUCCESS)
+        return VLC_EGENERIC;
+
     return VLC_SUCCESS;
 }
 
@@ -671,6 +843,7 @@ int OpenSout( vlc_object_t *p_this )
         delete p_sys;
         return VLC_EGENERIC;
     }
+    p_sys->p_upnp->addListener( p_sys->renderer );
 
     p_sys->renderer->GetProtocolInfo();
     p_sys->renderer->PrepareForConnection();
@@ -692,6 +865,7 @@ void CloseSout( vlc_object_t *p_this)
     sout_stream_t *p_stream = reinterpret_cast<sout_stream_t*>( p_this );
     sout_stream_sys_t *p_sys = static_cast<sout_stream_sys_t *>( p_stream->p_sys );
 
+    p_sys->p_upnp->removeListener( p_sys->renderer );
     p_sys->p_upnp->release();
     delete p_sys;
 }

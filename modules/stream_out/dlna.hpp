@@ -57,7 +57,7 @@ namespace Sout
 int OpenSout(vlc_object_t *);
 void CloseSout(vlc_object_t *);
 
-class MediaRenderer
+class MediaRenderer : public UpnpInstanceWrapper::Listener
 {
 public:
     MediaRenderer(sout_stream_t *p_stream, UpnpInstanceWrapper *upnp,
@@ -80,8 +80,12 @@ public:
     std::string device_url;
     int device_port;
     UpnpClient_Handle handle;
+    int onEvent( Upnp_EventType event_type,
+                 UpnpEventPtr Event,
+                 void *p_user_data ) override;
 
     char *getServiceURL(const char* type, const char* service);
+    int parseAVTransportState(IXML_Document* event);
 
     int Subscribe();
     int Play(const char *speed);
