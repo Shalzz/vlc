@@ -26,6 +26,13 @@
 
 #include "../../services_discovery/upnp-wrapper.hpp"
 #include "dlna_common.hpp"
+#include "profile_names.hpp"
+
+struct protocol_info_t {
+    std::string protocol_str;
+    std::string transport;
+    dlna_profile profile;
+};
 
 namespace Sout
 {
@@ -53,6 +60,7 @@ public:
 
     int Play(const char *speed);
     int Stop();
+    std::vector<protocol_info_t> GetProtocolInfo();
     int SetAVTransportURI(const char* uri);
 };
 

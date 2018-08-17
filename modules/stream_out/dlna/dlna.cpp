@@ -63,8 +63,9 @@ struct sout_stream_sys_t
     std::shared_ptr<Sout::MediaRenderer> renderer;
     UpnpInstanceWrapper *p_upnp;
 
-    bool canDecodeAudio( vlc_fourcc_t i_codec ) const;
-    bool canDecodeVideo( vlc_fourcc_t i_codec ) const;
+    bool canDecodeAudio( vlc_fourcc_t i_codec );
+    bool canDecodeVideo( sout_stream_t*, vlc_fourcc_t audio_codec,
+                         vlc_fourcc_t video_codec );
     bool startSoutChain( sout_stream_t* p_stream,
                          const std::vector<sout_stream_id_sys_t*> &new_streams,
                          const std::string &sout );
@@ -81,19 +82,43 @@ struct sout_stream_sys_t
     int                                 http_port;
     std::vector<sout_stream_id_sys_t*>  streams;
     std::vector<sout_stream_id_sys_t*>  out_streams;
+    std::vector<protocol_info_t>        device_protocols;
+    protocol_info_t                     stream_protocol;
 
     int UpdateOutput( sout_stream_t *p_stream );
 
 };
 
-bool sout_stream_sys_t::canDecodeAudio(vlc_fourcc_t i_codec) const
+bool sout_stream_sys_t::canDecodeAudio(vlc_fourcc_t audio_codec)
 {
-    return i_codec == VLC_CODEC_MP4A;
+    for (protocol_info_t protocol : device_protocols) {
+        if (protocol.profile.mime.substr(0, 6) == "audio/"
+                && protocol.profile.audio_codec == audio_codec)
+        {
+            stream_protocol = protocol;
+            return true;
+        }
+    }
+    return false;
 }
 
-bool sout_stream_sys_t::canDecodeVideo(vlc_fourcc_t i_codec) const
+bool sout_stream_sys_t::canDecodeVideo(sout_stream_t *p_stream,
+        vlc_fourcc_t audio_codec, vlc_fourcc_t video_codec)
 {
-    return i_codec == VLC_CODEC_H264;
+    msg_Dbg( p_stream, "got %lu supported profiles", device_protocols.size() );
+    for (protocol_info_t protocol : device_protocols) {
+        if (protocol.profile.mime.substr(0, 6) == "video/"
+                && protocol.profile.audio_codec == audio_codec
+                && protocol.profile.video_codec == video_codec)
+        {
+            msg_Dbg( p_stream, "matched profile %s:%s",
+                        protocol.profile.mime.c_str(),
+                        protocol.profile.name.c_str() );
+            stream_protocol = protocol;
+            return true;
+        }
+    }
+    return false;
 }
 
 bool sout_stream_sys_t::startSoutChain(sout_stream_t *p_stream,
@@ -181,6 +206,8 @@ int sout_stream_sys_t::UpdateOutput( sout_stream_t *p_stream )
 
     bool canRemux = true;
     vlc_fourcc_t i_codec_video = 0, i_codec_audio = 0;
+    const es_format_t *p_original_audio = NULL;
+    const es_format_t *p_original_video = NULL;
     std::vector<sout_stream_id_sys_t*> new_streams;
 
     for (std::vector<sout_stream_id_sys_t*>::iterator it = streams.begin();
@@ -189,31 +216,43 @@ int sout_stream_sys_t::UpdateOutput( sout_stream_t *p_stream )
         const es_format_t *p_es = &(*it)->fmt;
         if (p_es->i_cat == AUDIO_ES)
         {
-            if (!canDecodeAudio( p_es->i_codec ))
-            {
-                msg_Dbg( p_stream, "can't remux audio track %d codec %4.4s",
-                        p_es->i_id, (const char*)&p_es->i_codec );
-                canRemux = false;
-            }
-            else if (i_codec_audio == 0)
-            {
-                i_codec_audio = p_es->i_codec;
-            }
+            p_original_audio = p_es;
             new_streams.push_back(*it);
         }
         else if (b_supports_video && p_es->i_cat == VIDEO_ES)
         {
-            if (!canDecodeVideo( p_es->i_codec ))
-            {
-                msg_Dbg( p_stream, "can't remux video track %d codec %4.4s",
-                        p_es->i_id, (const char*)&p_es->i_codec );
-                canRemux = false;
-            }
-            else if (i_codec_video == 0)
-            {
-                i_codec_video = p_es->i_codec;
-            }
+            p_original_video = p_es;
+            msg_Dbg( p_stream, "codec profile %d", p_es->i_profile );
             new_streams.push_back(*it);
+        }
+    }
+
+    // check if we have a audio only stream
+    if (!p_original_video && p_original_audio)
+    {
+        if (!canDecodeAudio(p_original_audio->i_codec)) {
+            msg_Dbg( p_stream, "can't remux audio track codec %4.4s ",
+                    (const char*)&p_original_audio->i_codec);
+            canRemux = false;
+        }
+        else if (i_codec_audio == 0)
+            i_codec_audio = p_original_audio->i_codec;
+    }
+    else if (!canDecodeVideo(p_stream, p_original_audio->i_codec, p_original_video->i_codec))
+    {
+        msg_Dbg( p_stream, "can't remux video track audio: %4.4s and video: %4.4s",
+                (const char*)&p_original_audio->i_codec, (const char*)&p_original_video->i_codec);
+        canRemux = false;
+    }
+    else
+    {
+        if (i_codec_audio == 0)
+        {
+            i_codec_audio = p_original_audio->i_codec;
+        }
+        if (i_codec_video == 0)
+        {
+            i_codec_video = p_original_video->i_codec;
         }
     }
 
@@ -252,11 +291,18 @@ int sout_stream_sys_t::UpdateOutput( sout_stream_t *p_stream )
         ssout << "}:";
     }
 
-    std::string mux;
     std::string mime;
-
-    mux  = default_muxer;
-    mime = default_mime;
+    std::string mux;
+    if (canRemux)
+    {
+        mime = stream_protocol.profile.mime;
+        mux  = stream_protocol.profile.mux;
+    }
+    else
+    {
+        mime = default_mime;
+        mux  = default_muxer;
+    }
 
     std::ostringstream ss;
     ss << "/dlna"
@@ -293,6 +339,16 @@ int sout_stream_sys_t::UpdateOutput( sout_stream_t *p_stream )
     renderer->Play("1");
 
     return VLC_SUCCESS;
+}
+
+std::vector<std::string> split(const std::string &s, char delim) {
+    std::stringstream ss(s);
+    std::string item;
+    std::vector<std::string> elems;
+    while (std::getline(ss, item, delim)) {
+        elems.push_back(item);
+    }
+    return elems;
 }
 
 namespace Sout
@@ -409,6 +465,77 @@ int MediaRenderer::Stop()
     }
     ixmlDocument_free(p_response);
     return VLC_SUCCESS;
+}
+
+std::vector<protocol_info_t> MediaRenderer::GetProtocolInfo()
+{
+    std::string protocol_csv;
+    std::vector<protocol_info_t> supported_protocols;
+    std::list<std::pair<const char*, const char*>> arg_list;
+
+    IXML_Document *response = SendAction("GetProtocolInfo",
+                                CONNECTION_MANAGER_SERVICE_TYPE, arg_list);
+    if(!response)
+    {
+        ixmlDocument_free(response);
+        return supported_protocols;
+    }
+
+    // Get the CSV list of protocols/profiles supported by the device
+    if( IXML_NodeList *protocol_list = ixmlDocument_getElementsByTagName( response , "Sink" ) )
+    {
+        if ( IXML_Node* protocol_node = ixmlNodeList_item( protocol_list, 0 ) )
+        {
+            IXML_Node* p_text_node = ixmlNode_getFirstChild( protocol_node );
+            if ( p_text_node )
+            {
+                protocol_csv.assign(ixmlNode_getNodeValue( p_text_node ));
+            }
+        }
+        ixmlNodeList_free( protocol_list);
+    }
+    ixmlDocument_free(response);
+
+    // parse the CSV list
+    // format: <transportProtocol>:<network>:<mime>:<additionalInfo>
+    std::vector<std::string> protocols = split(protocol_csv, ',');
+    for (std::string protocol : protocols ) {
+        std::vector<std::string> protocol_info = split(protocol, ':');
+
+        // We only support http transport for now.
+        if (protocol_info.size() == 4 && protocol_info.at(0) == "http-get")
+        {
+            protocol_info_t proto;
+            proto.protocol_str = protocol;
+            proto.transport = protocol_info.at(0);
+
+            // Get the DLNA profile name
+            std::string profile_name;
+            std::string tag = "DLNA.ORG_PN=";
+
+            if (protocol_info.at(3) == "*")
+            {
+               profile_name = "*";
+            }
+            else if (std::size_t index = protocol_info.at(3).find(tag) != std::string::npos)
+            {
+                profile_name = protocol_info.at(3).substr(index + tag.length() - 1 );
+            }
+
+            // Match our supported profiles to device profiles
+            for (dlna_profile profile : dlna_profile_list) {
+                if (protocol_info.at(2) == profile.mime
+                        && profile_name == profile.name)
+                {
+                    proto.profile = std::move(profile);
+                    supported_protocols.push_back(std::move(proto));
+                    break;
+                }
+            }
+        }
+    }
+
+    return supported_protocols;
 }
 
 int MediaRenderer::SetAVTransportURI(const char* uri)
@@ -567,6 +694,8 @@ int OpenSout( vlc_object_t *p_this )
         p_sys->p_upnp->release();
         goto error;
     }
+
+    p_sys->device_protocols = p_sys->renderer->GetProtocolInfo();
 
     p_stream->pf_add     = Add;
     p_stream->pf_del     = Del;
