@@ -90,6 +90,8 @@ public:
     int Next();
     int Previous();
     int Seek();
+    int PrepareForConnection();
+    int GetProtocolInfo();
     int SetAVTransportURI(const char* uri);
 };
 

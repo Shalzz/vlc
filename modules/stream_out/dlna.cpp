@@ -403,6 +403,80 @@ int MediaRenderer::Stop()
     return VLC_SUCCESS;
 }
 
+int MediaRenderer::GetProtocolInfo()
+{
+    IXML_Document* p_action = NULL;
+    IXML_Document* p_response = NULL;
+    int i_res;
+    const char *urn = CONNECTION_MANAGER_SERVICE_TYPE;
+
+    i_res = UpnpAddToAction( &p_action, "GetProtocolInfo",
+            urn, NULL, NULL);
+    if (i_res != UPNP_E_SUCCESS)
+        return VLC_EGENERIC;
+    char *actionUrl = getServiceURL(urn, "controlURL");
+    if (actionUrl == NULL)
+        return VLC_EGENERIC;
+    i_res = UpnpSendAction(handle, actionUrl, urn, NULL, p_action, &p_response);
+    if (i_res != UPNP_E_SUCCESS)
+        return VLC_EGENERIC;
+    msg_Dbg(parent, "protocolinfo: %s", ixmlPrintDocument(p_response));
+    ixmlDocument_free(p_response);
+    ixmlDocument_free(p_action);
+    return VLC_SUCCESS;
+}
+
+int MediaRenderer::PrepareForConnection()
+{
+    msg_Dbg(parent, "prepare for connection: called! ");
+    IXML_Document* p_action = NULL;
+    IXML_Document* p_response = NULL;
+    int i_res;
+    const char *urn = CONNECTION_MANAGER_SERVICE_TYPE;
+
+    i_res = UpnpAddToAction( &p_action, "PrepareForConnection",
+            urn, "PeerConnectionID", "-1");
+    if (i_res != UPNP_E_SUCCESS)
+    {
+        msg_Err(parent, "PeerConnectionID: %s", UpnpGetErrorMessage(i_res));
+        return VLC_EGENERIC;
+    }
+    i_res = UpnpAddToAction( &p_action, "PrepareForConnection",
+            urn, "PeerConnectionManager", "");
+    if (i_res != UPNP_E_SUCCESS)
+    {
+        msg_Err(parent, "PeerConnectionManager: %s", UpnpGetErrorMessage(i_res));
+        return VLC_EGENERIC;
+    }
+    i_res = UpnpAddToAction( &p_action, "PrepareForConnection",
+            urn, "Direction", "Input");
+    if (i_res != UPNP_E_SUCCESS)
+    {
+        msg_Err(parent, "Direction: %s", UpnpGetErrorMessage(i_res));
+        return VLC_EGENERIC;
+    }
+    i_res = UpnpAddToAction( &p_action, "PrepareForConnection",
+            urn, "RemoteProtocolInfo", "");
+    if (i_res != UPNP_E_SUCCESS)
+    {
+        msg_Err(parent, "RemoteProtocolInfo: %s", UpnpGetErrorMessage(i_res));
+        return VLC_EGENERIC;
+    }
+    char *actionUrl = getServiceURL(urn, "controlURL");
+    if (actionUrl == NULL)
+        return VLC_EGENERIC;
+    i_res = UpnpSendAction(handle, actionUrl, urn, NULL, p_action, &p_response);
+    if (i_res < 0)
+    {
+        msg_Err(parent, "prepare for connection: %d msg: %s",i_res , UpnpGetErrorMessage(i_res));
+        return VLC_EGENERIC;
+    }
+    msg_Dbg(parent, "upnp connection id: %d response: %s",i_res, ixmlPrintDocument(p_response));
+    ixmlDocument_free(p_response);
+    ixmlDocument_free(p_action);
+    return VLC_SUCCESS;
+}
+
 int MediaRenderer::SetAVTransportURI(const char* uri)
 {
     IXML_Document* p_action = NULL;
@@ -598,6 +672,8 @@ int OpenSout( vlc_object_t *p_this )
         return VLC_EGENERIC;
     }
 
+    p_sys->renderer->GetProtocolInfo();
+    p_sys->renderer->PrepareForConnection();
     p_sys->renderer->Subscribe();
 
     p_stream->pf_add     = Add;
