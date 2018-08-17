@@ -26,6 +26,31 @@
 
 #include "../../services_discovery/upnp-wrapper.hpp"
 #include "dlna_common.hpp"
+#include "profile_names.hpp"
+
+struct protocol_info_t {
+    dlna_transport_protocol_t transport = DLNA_TRANSPORT_PROTOCOL_HTTP;
+    dlna_org_conversion_t ci = DLNA_ORG_CONVERSION_NONE;
+    dlna_profile_t profile;
+};
+
+typedef std::unique_ptr<protocol_info_t> ProtocolPtr;
+inline ProtocolPtr make_protocol(protocol_info_t a)
+{
+    return std::make_unique<protocol_info_t>(a);
+}
+
+const protocol_info_t default_audio_protocol = {
+    DLNA_TRANSPORT_PROTOCOL_HTTP,
+    DLNA_ORG_CONVERSION_TRANSCODED,
+    default_audio_profile,
+};
+
+const protocol_info_t default_video_protocol = {
+    DLNA_TRANSPORT_PROTOCOL_HTTP,
+    DLNA_ORG_CONVERSION_TRANSCODED,
+    default_video_profile,
+};
 
 namespace DLNA
 {
@@ -53,7 +78,8 @@ public:
 
     int Play(const char *speed);
     int Stop();
-    int SetAVTransportURI(const char* uri);
+    std::vector<protocol_info_t> GetProtocolInfo();
+    int SetAVTransportURI(const char* uri, const protocol_info_t proto);
 };
 
 }
