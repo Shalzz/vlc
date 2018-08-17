@@ -37,10 +37,6 @@
 #define HTTP_PORT_LONGTEXT N_("This sets the HTTP port of the local server used to stream the media to the UPnP Renderer.")
 #define HAS_VIDEO_TEXT N_("Video")
 #define HAS_VIDEO_LONGTEXT N_("The UPnP Renderer can receive video.")
-#define MUX_TEXT N_("Muxer")
-#define MUX_LONGTEXT N_("This sets the muxer used to stream to the UPnP Renderer.")
-#define MIME_TEXT N_("MIME content type")
-#define MIME_LONGTEXT N_("This sets the media MIME content type sent to the UPnP Renderer.")
 
 #define IP_ADDR_TEXT N_("IP Address")
 #define IP_ADDR_LONGTEXT N_("IP Address of the UPnP Renderer.")
@@ -50,11 +46,6 @@
 #define BASE_URL_LONGTEXT N_("The base Url relative to which all other UPnP operations must be called")
 #define URL_TEXT N_("description URL")
 #define URL_LONGTEXT N_("The Url used to get the xml descriptor of the UPnP Renderer")
-
-static const vlc_fourcc_t DEFAULT_TRANSCODE_AUDIO = VLC_CODEC_MP4A;
-static const vlc_fourcc_t DEFAULT_TRANSCODE_VIDEO = VLC_CODEC_H264;
-static const char DEFAULT_MUXER[] = "mp4stream";
-static const char DEFAULT_MIME[]  = "video/mp4";
 
 namespace Sout
 {

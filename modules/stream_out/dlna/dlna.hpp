@@ -26,6 +26,28 @@
 
 #include "../../services_discovery/upnp-wrapper.hpp"
 #include "dlna_common.hpp"
+#include "profile_names.hpp"
+
+struct protocol_info_t {
+    std::string protocol_str;
+    std::string transport;
+    dlna_profile profile;
+};
+
+typedef std::unique_ptr<protocol_info_t> ProtocolPtr;
+#define make_protocol(ptr) std::make_unique<protocol_info_t>(ptr)
+
+const protocol_info_t default_audio_protocol = {
+    "http-get:*:audio/mpeg:DLNA.ORG_PN=MP3"
+    ,"http-get"
+    ,default_audio_profile
+};
+
+const protocol_info_t default_video_protocol = {
+    "http-get:*:video/mp4:DLNA.ORG_PN=AVC_MP4_MP_SD;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=01700000000000000000000000000000"
+    ,"http-get"
+    ,default_video_profile
+};
 
 namespace Sout
 {
@@ -53,7 +75,8 @@ public:
 
     int Play(const char *speed);
     int Stop();
-    int SetAVTransportURI(const char* uri);
+    std::vector<protocol_info_t> GetProtocolInfo();
+    int SetAVTransportURI(const char* uri, const protocol_info_t proto);
 };
 
 }
