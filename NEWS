@@ -37,6 +37,9 @@ Video output:
  * Remove RealRTSP plugin
  * Remove Real demuxer plugin
 
+Stream Output:
+ * Add DLNA/UPNP stream output module
+
 macOS:
  * Remove Growl notification support
 
