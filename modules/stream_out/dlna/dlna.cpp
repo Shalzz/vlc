@@ -36,6 +36,7 @@
 
 static const char* AV_TRANSPORT_SERVICE_TYPE = "urn:schemas-upnp-org:service:AVTransport:1";
 static const char* CONNECTION_MANAGER_SERVICE_TYPE = "urn:schemas-upnp-org:service:ConnectionManager:1";
+static const char* RENDERING_CONTROL_SERVICE_TYPE = "urn:schemas-upnp-org:service:RenderingControl:1";
 
 static const char *const ppsz_sout_options[] = {
     "ip", "port", "http-port", "video", "base_url", "url", NULL
@@ -546,6 +547,36 @@ int MediaRenderer::SetAVTransportURI(const char* uri, const protocol_info_t prot
     return VLC_SUCCESS;
 }
 
+int MediaRenderer::Subscribe()
+{
+    int timeout = 300;
+    Upnp_SID sid1;
+
+    char *url = getServiceURL(RENDERING_CONTROL_SERVICE_TYPE, "eventSubURL");
+    int ret = UpnpSubscribe(handle, url, &timeout, sid1);
+    if (ret != UPNP_E_SUCCESS) {
+        msg_Err(parent, "Unable to Subscribe to %s: %d",
+                url, ret);
+        return VLC_EGENERIC;
+    }
+    Upnp_sid = sid1;
+    msg_Dbg(parent, "Subscribed successfully to %s with timeout: %d",
+            url, timeout);
+    return VLC_SUCCESS;
+}
+
+int MediaRenderer::UnSubscribe()
+{
+    int ret = UpnpUnSubscribe(handle, Upnp_sid.c_str());
+    if (ret != UPNP_E_SUCCESS) {
+        msg_Err(parent, "Unable to unsubscribe to %s: %d",
+                Upnp_sid.c_str(), ret);
+        return VLC_EGENERIC;
+    }
+    msg_Dbg(parent, "Unsubscribed successfully to %s", Upnp_sid.c_str());
+    return VLC_SUCCESS;
+}
+
 static void *Add(sout_stream_t *p_stream, const es_format_t *p_fmt)
 {
     sout_stream_sys_t *p_sys = static_cast<sout_stream_sys_t *>( p_stream->p_sys );
@@ -682,6 +713,7 @@ int OpenSout( vlc_object_t *p_this )
         goto error;
     }
 
+    p_sys->renderer->Subscribe();
     p_sys->device_protocols = p_sys->renderer->GetProtocolInfo();
 
     p_stream->pf_add     = Add;
@@ -709,6 +741,7 @@ void CloseSout( vlc_object_t *p_this)
     sout_stream_t *p_stream = reinterpret_cast<sout_stream_t*>( p_this );
     sout_stream_sys_t *p_sys = static_cast<sout_stream_sys_t *>( p_stream->p_sys );
 
+    p_sys->renderer->UnSubscribe();
     p_sys->p_upnp->release();
     delete p_sys;
 }
