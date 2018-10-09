@@ -31,6 +31,7 @@
 #include <string>
 #include <sstream>
 
+#include <vlc_block.h>
 #include <vlc_rand.h>
 #include <vlc_sout.h>
 
@@ -53,8 +54,9 @@ struct sout_stream_sys_t
     sout_stream_sys_t(int http_port, bool supports_video)
         : p_out(NULL)
         , b_supports_video(supports_video)
-        , es_changed(true)
         , http_port(http_port)
+        , es_changed(true)
+        , cc_has_input( false )
     {
     }
 
@@ -74,15 +76,114 @@ struct sout_stream_sys_t
 
     sout_stream_t                       *p_out;
     bool                                b_supports_video;
-    bool                                es_changed;
     int                                 http_port;
+
+    sout_stream_id_sys_t *              video_proxy_id;
+    vlc_tick_t                          first_video_keyframe_pts;
+    std::string                         transport_uri;
+    bool                                has_video;
+    bool                                es_changed;
+    bool                                cc_has_input;
     std::vector<sout_stream_id_sys_t*>  streams;
     std::vector<sout_stream_id_sys_t*>  out_streams;
+    unsigned int                        out_streams_added;
+    unsigned int                        spu_streams_count;
     std::vector<protocol_info_t>        device_protocols;
+    ProtocolPtr                         protocol;
 
     int UpdateOutput( sout_stream_t *p_stream );
 
 };
+
+static void *ProxyAdd(sout_stream_t *p_stream, const es_format_t *p_fmt)
+{
+    sout_stream_sys_t *p_sys = reinterpret_cast<sout_stream_sys_t *>( p_stream->p_sys );
+    sout_stream_id_sys_t *id = reinterpret_cast<sout_stream_id_sys_t *>( sout_StreamIdAdd(p_stream->p_next, p_fmt) );
+    if (id)
+    {
+        if (p_fmt->i_cat == VIDEO_ES)
+            p_sys->video_proxy_id = id;
+        p_sys->out_streams_added++;
+    }
+    return id;
+}
+
+static void ProxyDel(sout_stream_t *p_stream, void *_id)
+{
+    sout_stream_sys_t *p_sys = reinterpret_cast<sout_stream_sys_t *>( p_stream->p_sys );
+    sout_stream_id_sys_t *id = reinterpret_cast<sout_stream_id_sys_t *>( _id );
+    p_sys->out_streams_added--;
+    if (id == p_sys->video_proxy_id)
+        p_sys->video_proxy_id = NULL;
+    return sout_StreamIdDel(p_stream->p_next, id);
+}
+
+static int ProxySend(sout_stream_t *p_stream, void *_id, block_t *p_buffer)
+{
+    sout_stream_sys_t *p_sys = reinterpret_cast<sout_stream_sys_t *>( p_stream->p_sys );
+    sout_stream_id_sys_t *id = reinterpret_cast<sout_stream_id_sys_t *>( _id );
+    if (p_sys->cc_has_input
+     || p_sys->out_streams_added >= p_sys->out_streams.size() - p_sys->spu_streams_count)
+    {
+        if (p_sys->has_video)
+        {
+            // In case of video, the first block must be a keyframe
+            if (id == p_sys->video_proxy_id)
+            {
+                if (p_sys->first_video_keyframe_pts == -1
+                 && p_buffer->i_flags & BLOCK_FLAG_TYPE_I)
+                    p_sys->first_video_keyframe_pts = p_buffer->i_pts;
+            }
+            else // no keyframe for audio
+                p_buffer->i_flags &= ~BLOCK_FLAG_TYPE_I;
+
+            if (p_buffer->i_pts < p_sys->first_video_keyframe_pts
+             || p_sys->first_video_keyframe_pts == -1)
+            {
+                block_ChainRelease(p_buffer);
+                return VLC_SUCCESS;
+            }
+        }
+
+        int ret = sout_StreamIdSend(p_stream->p_next, id, p_buffer);
+        if (ret == VLC_SUCCESS && !p_sys->cc_has_input)
+        {
+            /* Start the cast only when all streams are added into the
+             * last sout (the http one) */
+            p_sys->renderer->SetAVTransportURI(p_sys->transport_uri.c_str(), *p_sys->protocol);
+            p_sys->renderer->Play("1");
+            p_sys->cc_has_input = true;
+        }
+        return ret;
+    }
+    else
+    {
+        block_ChainRelease(p_buffer);
+        return VLC_SUCCESS;
+    }
+}
+
+static void ProxyFlush(sout_stream_t *p_stream, void *id)
+{
+    sout_StreamFlush(p_stream->p_next, id);
+}
+
+int ProxyOpen(vlc_object_t *p_this)
+{
+    sout_stream_t *p_stream = reinterpret_cast<sout_stream_t*>(p_this);
+    sout_stream_sys_t *p_sys = (sout_stream_sys_t *) var_InheritAddress(p_this, SOUT_CFG_PREFIX "sys");
+    if (p_sys == NULL || p_stream->p_next == NULL)
+        return VLC_EGENERIC;
+
+    p_stream->p_sys = (sout_stream_sys_t *) p_sys;
+    p_sys->out_streams_added = 0;
+
+    p_stream->pf_add     = ProxyAdd;
+    p_stream->pf_del     = ProxyDel;
+    p_stream->pf_send    = ProxySend;
+    p_stream->pf_flush   = ProxyFlush;
+    return VLC_SUCCESS;
+}
 
 ProtocolPtr sout_stream_sys_t::canDecodeAudio(vlc_fourcc_t audio_codec) const
 {
@@ -116,7 +217,12 @@ bool sout_stream_sys_t::startSoutChain(sout_stream_t *p_stream,
                                        const std::string &sout)
 {
     msg_Dbg( p_stream, "Creating chain %s", sout.c_str() );
+    cc_has_input = false;
+    first_video_keyframe_pts = -1;
+    video_proxy_id = NULL;
+    has_video = false;
     out_streams = new_streams;
+    spu_streams_count = 0;
 
     p_out = sout_StreamChainNew( p_stream->p_sout, sout.c_str(), NULL, NULL);
     if (p_out == NULL) {
@@ -140,7 +246,13 @@ bool sout_stream_sys_t::startSoutChain(sout_stream_t *p_stream,
             it = out_streams.erase( it );
         }
         else
+        {
+            if( p_sys_id->fmt.i_cat == VIDEO_ES )
+                has_video = true;
+            else if( p_sys_id->fmt.i_cat == SPU_ES )
+                spu_streams_count++;
             ++it;
+        }
     }
 
     if (out_streams.empty())
@@ -273,10 +385,12 @@ int sout_stream_sys_t::UpdateOutput( sout_stream_t *p_stream )
     ss << "/dlna"
        << "/" << vlc_tick_now()
        << "/" << static_cast<uint64_t>( vlc_mrand48() )
-       << "/stream";
+       << "/stream"
+       << ".mp4";
     std::string root_url = ss.str();
 
-    ssout << "http{dst=:" << http_port << root_url
+    ssout << "cast-proxy:"
+          << "http{dst=:" << http_port << root_url
           << ",mux=" << stream_protocol->profile.mux
           << ",access=http{mime=" << stream_protocol->profile.mime << "}}";
 
@@ -300,8 +414,8 @@ int sout_stream_sys_t::UpdateOutput( sout_stream_t *p_stream )
     }
 
     msg_Dbg(p_stream, "AVTransportURI: %s", uri);
-    renderer->SetAVTransportURI(uri, *stream_protocol);
-    renderer->Play("1");
+    transport_uri = uri;
+    protocol = make_protocol(*stream_protocol);
 
     free(uri);
     return VLC_SUCCESS;
@@ -654,6 +768,10 @@ static void Del(sout_stream_t *p_stream, void *_id)
                     if (*out_it == id)
                     {
                         p_sys->out_streams.erase(out_it);
+                        if( p_sys_id->fmt.i_cat == VIDEO_ES )
+                            p_sys->has_video = false;
+                        else if( p_sys_id->fmt.i_cat == SPU_ES )
+                            p_sys->spu_streams_count--;
                         break;
                     }
                     out_it++;
@@ -713,6 +831,9 @@ int OpenSout( vlc_object_t *p_this )
         goto error;
     }
 
+    var_Create( p_stream->p_sout, SOUT_CFG_PREFIX "sys", VLC_VAR_ADDRESS );
+    var_SetAddress( p_stream->p_sout, SOUT_CFG_PREFIX "sys", p_sys );
+
     p_sys->renderer->Subscribe();
     p_sys->device_protocols = p_sys->renderer->GetProtocolInfo();
 
@@ -740,6 +861,7 @@ void CloseSout( vlc_object_t *p_this)
 {
     sout_stream_t *p_stream = reinterpret_cast<sout_stream_t*>( p_this );
     sout_stream_sys_t *p_sys = static_cast<sout_stream_sys_t *>( p_stream->p_sys );
+    var_Destroy( p_stream->p_sout, SOUT_CFG_PREFIX "sys" );
 
     p_sys->renderer->UnSubscribe();
     p_sys->p_upnp->release();

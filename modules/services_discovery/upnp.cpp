@@ -162,6 +162,12 @@ vlc_module_begin()
         add_bool(SOUT_CFG_PREFIX "video", true, HAS_VIDEO_TEXT, HAS_VIDEO_LONGTEXT, false)
         add_string(SOUT_CFG_PREFIX "base_url", NULL, BASE_URL_TEXT, BASE_URL_LONGTEXT, false)
         add_string(SOUT_CFG_PREFIX "url", NULL, URL_TEXT, URL_LONGTEXT, false)
+
+    add_submodule()
+        /* sout proxy that start the dlna stream only when all streams are loaded */
+        add_shortcut("cast-proxy")
+        set_capability("sout stream", 0)
+        set_callbacks(ProxyOpen, NULL)
 vlc_module_end()
 
 /*

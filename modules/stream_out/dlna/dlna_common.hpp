@@ -47,6 +47,8 @@
 #define URL_TEXT N_("description URL")
 #define URL_LONGTEXT N_("The Url used to get the xml descriptor of the UPnP Renderer")
 
+int ProxyOpen(vlc_object_t *p_this);
+
 namespace Sout
 {
 
