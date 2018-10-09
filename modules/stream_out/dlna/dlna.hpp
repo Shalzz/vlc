@@ -53,6 +53,7 @@ public:
     std::string base_url;
     std::string device_url;
     UpnpClient_Handle handle;
+    std:: string Upnp_sid;
 
     char *getServiceURL(const char* type, const char* service);
     IXML_Document *SendAction(const char* action_name, const char *service_type,
@@ -62,6 +63,8 @@ public:
     int Stop();
     std::vector<protocol_info_t> GetProtocolInfo();
     int SetAVTransportURI(const char* uri);
+    int Subscribe();
+    int UnSubscribe();
 };
 
 }
