@@ -201,6 +201,12 @@ vlc_module_begin()
         add_integer(SOUT_CFG_PREFIX "conversion-quality", CONVERSION_QUALITY_DEFAULT,
                     CONVERSION_QUALITY_TEXT, CONVERSION_QUALITY_LONGTEXT, false );
             change_integer_list(conversion_quality_list, conversion_quality_list_text)
+
+    add_submodule()
+        set_subcategory(SUBCAT_SOUT_ACO)
+        add_shortcut("dlna-http")
+        set_capability("sout access", 0)
+        set_callbacks(DLNA::OpenAccess, DLNA::CloseAccess)
 vlc_module_end()
 
 /*

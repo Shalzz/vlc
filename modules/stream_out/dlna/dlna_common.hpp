@@ -48,7 +48,9 @@ static const int conversion_quality_list[] = {
 namespace DLNA
 {
 
-/* module callbacks */
+int OpenAccess(vlc_object_t *p_this);
+void CloseAccess(vlc_object_t *p_this);
+
 int OpenSout(vlc_object_t *);
 void CloseSout(vlc_object_t *);
 
