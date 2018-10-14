@@ -28,6 +28,15 @@
 #include "dlna_common.hpp"
 #include "profile_names.hpp"
 
+namespace DLNA
+{
+
+/* Fifo size after we tell the demux to pace */
+#define HTTPD_BUFFER_PACE INT64_C(2 * 1024 * 1024) /* 2 MB */
+/* Fifo size after we drop packets (should not happen) */
+#define HTTPD_BUFFER_MAX INT64_C(32 * 1024 * 1024) /* 32 MB */
+#define HTTPD_BUFFER_COPY_MAX INT64_C(10 * 1024 * 1024) /* 10 MB */
+
 struct protocol_info_t {
     dlna_transport_protocol_t transport = DLNA_TRANSPORT_PROTOCOL_HTTP;
     dlna_org_conversion_t ci = DLNA_ORG_CONVERSION_NONE;
@@ -51,9 +60,6 @@ const protocol_info_t default_video_protocol = {
     DLNA_ORG_CONVERSION_TRANSCODED,
     default_video_profile,
 };
-
-namespace DLNA
-{
 
 class MediaRenderer
 {
@@ -79,8 +85,9 @@ public:
     int Play(const char *speed);
     int Stop();
     std::vector<protocol_info_t> GetProtocolInfo();
-    int SetAVTransportURI(const char* uri, const protocol_info_t proto);
+    int SetAVTransportURI(const char* uri, const protocol_info_t proto,
+                            std::string dlna_info);
 };
 
-}
+} // namespace DLNA
 #endif /* DLNA_H */

@@ -31,6 +31,8 @@
 #include <string>
 #include <sstream>
 
+#include <vlc_block.h>
+#include <vlc_httpd.h>
 #include <vlc_dialog.h>
 #include <vlc_rand.h>
 #include <vlc_sout.h>
@@ -42,8 +44,49 @@ static const char *const ppsz_sout_options[] = {
     "ip", "port", "http-port", "video", "base_url", "url", NULL
 };
 
-namespace DLNA
+namespace DLNA {
+
+struct sout_access_out_sys_t
 {
+    struct httpd_info_t {
+        httpd_info_t(httpd_host_t* host, int port);
+        ~httpd_info_t();
+
+        httpd_host_t *m_host;
+        int           m_port;
+        httpd_url_t  *m_url;
+        std::string   m_root;
+    } httpd;
+
+    sout_access_out_sys_t(httpd_host_t* host, int port);
+    ~sout_access_out_sys_t();
+
+    void clear();
+    void stop();
+    void prepare(sout_stream_t *p_stream,
+                    const std::string &mime,
+                    const std::string &info);
+    int  url_cb(httpd_client_t *cl, httpd_message_t *answer, const httpd_message_t *query);
+    void fifo_put_back(block_t *);
+    ssize_t write(sout_access_out_t *p_access, block_t *p_block);
+    void close();
+
+private:
+    void clearUnlocked();
+    void initCopy();
+    void putCopy(block_t *p_block);
+    void restoreCopy();
+
+    httpd_client_t    *m_client;
+    vlc_fifo_t        *m_fifo;
+    block_t           *m_header;
+    block_t           *m_copy_chain;
+    block_t           **m_copy_last;
+    size_t             m_copy_size;
+    bool               m_eof;
+    std::string        m_mime;
+    std::string        m_dlna_info;
+};
 
 struct sout_stream_id_sys_t
 {
@@ -53,13 +96,13 @@ struct sout_stream_id_sys_t
 
 struct sout_stream_sys_t
 {
-    sout_stream_sys_t(int http_port, bool supports_video)
+    sout_stream_sys_t(httpd_host_t *host, int http_port, bool supports_video)
         : p_out( NULL )
         , es_changed( true )
         , b_supports_video( supports_video )
         , perf_warning_shown( false )
         , venc_opt_idx ( -1 )
-        , http_port( http_port )
+        , access_out_live(host, http_port)
     {
     }
 
@@ -71,7 +114,8 @@ struct sout_stream_sys_t
                          vlc_fourcc_t video_codec ) const;
     bool startSoutChain( sout_stream_t* p_stream,
                          const std::vector<sout_stream_id_sys_t*> &new_streams,
-                         const std::string &sout );
+                         const std::string &sout,
+                         const std::string mime );
     void stopSoutChain( sout_stream_t* p_stream );
     sout_stream_id_sys_t *GetSubId( sout_stream_t *p_stream,
                                     sout_stream_id_sys_t *id,
@@ -86,6 +130,9 @@ struct sout_stream_sys_t
     std::vector<sout_stream_id_sys_t*>  streams;
     std::vector<sout_stream_id_sys_t*>  out_streams;
     std::vector<protocol_info_t>        device_protocols;
+    std::string                         dlna_info_str;
+
+    sout_access_out_sys_t               access_out_live;
 
 private:
     std::string GetVencOption( sout_stream_t *, vlc_fourcc_t *,
@@ -192,6 +239,314 @@ std::vector<std::string> split(const std::string &s, char delim) {
     return elems;
 }
 
+static int httpd_url_cb(httpd_callback_sys_t *data, httpd_client_t *cl,
+                        httpd_message_t *answer, const httpd_message_t *query)
+{
+    sout_access_out_sys_t *p_sys = reinterpret_cast<sout_access_out_sys_t *>(data);
+    return p_sys->url_cb(cl, answer, query);
+}
+
+sout_access_out_sys_t::httpd_info_t::httpd_info_t( httpd_host_t* host, int port )
+    : m_host( host )
+    , m_port( port )
+{
+    for( int i = 0; i < 3; ++i )
+    {
+        std::ostringstream ss;
+        ss << "/dlna"
+           << "/" << vlc_tick_now()
+           << "/" << static_cast<uint64_t>( vlc_mrand48() )
+           << "/stream";
+
+        m_root = ss.str();
+        m_url = httpd_UrlNew( m_host, m_root.c_str(), NULL, NULL );
+        if( m_url )
+            break;
+    }
+
+    if( m_url == NULL )
+        throw std::runtime_error( "unable to bind to http path" );
+}
+
+sout_access_out_sys_t::httpd_info_t::~httpd_info_t()
+
+{
+    if( m_url )
+        httpd_UrlDelete( m_url );
+    httpd_HostDelete(m_host);
+}
+
+sout_access_out_sys_t::sout_access_out_sys_t(httpd_host_t *host, int http_port)
+    : httpd(host, http_port)
+    , m_client(NULL)
+    , m_header(NULL)
+    , m_copy_chain(NULL)
+    , m_eof(true)
+
+{
+    m_fifo = block_FifoNew();
+    if (!m_fifo)
+        throw std::runtime_error( "block_FifoNew failed" );
+
+    httpd_UrlCatch(httpd.m_url, HTTPD_MSG_HEAD, httpd_url_cb,
+                   (httpd_callback_sys_t*)this);
+    httpd_UrlCatch(httpd.m_url, HTTPD_MSG_GET, httpd_url_cb,
+                   (httpd_callback_sys_t*)this);
+    initCopy();
+}
+
+sout_access_out_sys_t::~sout_access_out_sys_t()
+{
+    block_FifoRelease(m_fifo);
+}
+
+void sout_access_out_sys_t::clearUnlocked()
+{
+    block_ChainRelease(vlc_fifo_DequeueAllUnlocked(m_fifo));
+    if (m_header)
+    {
+        block_Release(m_header);
+        m_header = NULL;
+    }
+    m_eof = true;
+    initCopy();
+}
+
+void sout_access_out_sys_t::initCopy()
+{
+    block_ChainRelease(m_copy_chain);
+    m_copy_chain = NULL;
+    m_copy_last = &m_copy_chain;
+    m_copy_size = 0;
+}
+
+void sout_access_out_sys_t::putCopy(block_t *p_block)
+{
+    while (m_copy_size >= HTTPD_BUFFER_COPY_MAX)
+    {
+        assert(m_copy_chain);
+        block_t *copy = m_copy_chain;
+        m_copy_chain = copy->p_next;
+        m_copy_size -= copy->i_buffer;
+        block_Release(copy);
+    }
+    if (!m_copy_chain)
+    {
+        assert(m_copy_size == 0);
+        m_copy_last = &m_copy_chain;
+    }
+    block_ChainLastAppend(&m_copy_last, p_block);
+    m_copy_size += p_block->i_buffer;
+}
+
+void sout_access_out_sys_t::restoreCopy()
+{
+    if (m_copy_chain)
+    {
+        fifo_put_back(m_copy_chain);
+        m_copy_chain = NULL;
+        initCopy();
+    }
+}
+
+void sout_access_out_sys_t::clear()
+{
+    vlc_fifo_Lock(m_fifo);
+    clearUnlocked();
+    vlc_fifo_Unlock(m_fifo);
+    vlc_fifo_Signal(m_fifo);
+}
+
+void sout_access_out_sys_t::stop()
+{
+    vlc_fifo_Lock(m_fifo);
+    clearUnlocked();
+    m_client = NULL;
+    vlc_fifo_Unlock(m_fifo);
+    vlc_fifo_Signal(m_fifo);
+}
+
+void sout_access_out_sys_t::prepare(sout_stream_t *p_stream,
+                                    const std::string &mime,
+                                    const std::string &info)
+{
+    var_SetAddress(p_stream->p_sout, SOUT_CFG_PREFIX "access-out-sys", this);
+
+    vlc_fifo_Lock(m_fifo);
+    clearUnlocked();
+    m_mime = mime;
+    m_dlna_info = info;
+    m_eof = false;
+    vlc_fifo_Unlock(m_fifo);
+}
+
+void sout_access_out_sys_t::fifo_put_back(block_t *p_block)
+{
+    block_t *p_fifo = vlc_fifo_DequeueAllUnlocked(m_fifo);
+    vlc_fifo_QueueUnlocked(m_fifo, p_block);
+    vlc_fifo_QueueUnlocked(m_fifo, p_fifo);
+}
+
+int sout_access_out_sys_t::url_cb(httpd_client_t *cl, httpd_message_t *answer,
+                                  const httpd_message_t *query)
+{
+    if (!answer || !query || !cl)
+        return VLC_SUCCESS;
+
+    httpd_MsgAdd(answer, "transferMode.dlna.org", "%s", "Streaming");
+    httpd_MsgAdd(answer, "contentFeatures.dlna.org", "%s", m_dlna_info.c_str());
+
+    if (query->i_type == HTTPD_MSG_HEAD) {
+        httpd_MsgAdd(answer, "Content-type", "%s", m_mime.c_str());
+        return VLC_SUCCESS;
+    }
+
+    vlc_fifo_Lock(m_fifo);
+
+    if (!answer->i_body_offset)
+    {
+        /* When doing a lot a load requests, we can serve data to a client that
+         * will be closed (the close request is already sent). In that case, we
+         * should also serve data used by the old client to the new one. */
+        restoreCopy();
+        m_client = cl;
+    }
+
+    /* Send data per 512kB minimum */
+    size_t i_min_buffer = 524288;
+    while (m_client && vlc_fifo_GetBytes(m_fifo) < i_min_buffer && !m_eof)
+        vlc_fifo_Wait(m_fifo);
+
+    block_t *p_block = NULL;
+    if (m_client && vlc_fifo_GetBytes(m_fifo) > 0)
+    {
+        /* if less data is available, then we must be EOF */
+        if (vlc_fifo_GetBytes(m_fifo) < i_min_buffer)
+        {
+            assert(m_eof);
+            i_min_buffer = vlc_fifo_GetBytes(m_fifo);
+        }
+        block_t *p_first = vlc_fifo_DequeueUnlocked(m_fifo);
+
+        assert(p_first);
+        size_t i_total_size = p_first->i_buffer;
+        block_t *p_next = NULL, *p_cur = p_first;
+
+        while (i_total_size < i_min_buffer)
+        {
+            p_next = vlc_fifo_DequeueUnlocked(m_fifo);
+            assert(p_next);
+            i_total_size += p_next->i_buffer;
+            p_cur->p_next = p_next;
+            p_cur = p_cur->p_next;
+        }
+        assert(i_total_size >= i_min_buffer);
+
+        if (p_next != NULL)
+        {
+            p_block = block_Alloc(i_total_size);
+            if (p_block)
+                block_ChainExtract(p_first, p_block->p_buffer, p_block->i_buffer);
+            block_ChainRelease(p_first);
+        }
+        else
+            p_block = p_first;
+    }
+
+    answer->i_proto  = HTTPD_PROTO_HTTP;
+    answer->i_version= 0;
+    answer->i_type   = HTTPD_MSG_ANSWER;
+    answer->i_status = 200;
+
+    if (p_block)
+    {
+        if (answer->i_body_offset == 0)
+        {
+            httpd_MsgAdd(answer, "Content-type", "%s", m_mime.c_str());
+            httpd_MsgAdd(answer, "Cache-Control", "no-cache");
+            httpd_MsgAdd(answer, "Connection", "close");
+        }
+
+        const bool send_header = answer->i_body_offset == 0 && m_header != NULL;
+        size_t i_answer_size = p_block->i_buffer;
+        if (send_header)
+            i_answer_size += m_header->i_buffer;
+
+        answer->p_body = (uint8_t *) malloc(i_answer_size);
+        if (answer->p_body)
+        {
+            answer->i_body = i_answer_size;
+            answer->i_body_offset += answer->i_body;
+            size_t i_block_offset = 0;
+            if (send_header)
+            {
+                memcpy(answer->p_body, m_header->p_buffer, m_header->i_buffer);
+                i_block_offset = m_header->i_buffer;
+            }
+            memcpy(&answer->p_body[i_block_offset], p_block->p_buffer, p_block->i_buffer);
+        }
+
+        putCopy(p_block);
+    }
+    if (!answer->i_body)
+        httpd_MsgAdd(answer, "Connection", "close");
+
+    vlc_fifo_Unlock(m_fifo);
+    return VLC_SUCCESS;
+}
+
+ssize_t sout_access_out_sys_t::write(sout_access_out_t *p_access, block_t *p_block)
+{
+    size_t i_len = p_block->i_buffer;
+
+    vlc_fifo_Lock(m_fifo);
+
+    if (p_block->i_flags & BLOCK_FLAG_HEADER)
+    {
+        if (m_header)
+            block_Release(m_header);
+        m_header = p_block;
+    }
+    else
+    {
+        /* Drop buffer if the fifo is really full */
+        if (vlc_fifo_GetBytes(m_fifo) >= HTTPD_BUFFER_PACE)
+        {
+            /* XXX: Hackisk way to pace between the sout (controlled by the
+             * decoder thread) and the demux filter (controlled by the input
+             * thread). When the httpd FIFO reaches a specific size, we tell
+             * the demux filter to pace and wait a little before queing this
+             * block, but not too long since we don't want to block decoder
+             * thread controls. If the pacing fails (should not happen), we
+             * drop the first block in order to make room. The demux filter
+             * will be unpaced when the data is read from the httpd thread. */
+
+            while (vlc_fifo_GetBytes(m_fifo) >= HTTPD_BUFFER_MAX)
+            {
+                block_t *p_drop = vlc_fifo_DequeueUnlocked(m_fifo);
+                msg_Warn(p_access, "httpd buffer full: dropping %zuB", p_drop->i_buffer);
+                block_Release(p_drop);
+            }
+        }
+        vlc_fifo_QueueUnlocked(m_fifo, p_block);
+    }
+
+    m_eof = false;
+
+    vlc_fifo_Unlock(m_fifo);
+    vlc_fifo_Signal(m_fifo);
+
+    return i_len;
+}
+
+void sout_access_out_sys_t::close()
+{
+    vlc_fifo_Lock(m_fifo);
+    m_eof = true;
+    vlc_fifo_Unlock(m_fifo);
+    vlc_fifo_Signal(m_fifo);
+}
+
 ProtocolPtr sout_stream_sys_t::canDecodeAudio(vlc_fourcc_t audio_codec) const
 {
     for (protocol_info_t protocol : device_protocols) {
@@ -220,15 +575,19 @@ ProtocolPtr sout_stream_sys_t::canDecodeVideo(vlc_fourcc_t audio_codec,
 
 bool sout_stream_sys_t::startSoutChain(sout_stream_t *p_stream,
                                        const std::vector<sout_stream_id_sys_t*> &new_streams,
-                                       const std::string &sout)
+                                       const std::string &sout,
+                                       const std::string mime)
 {
     msg_Dbg( p_stream, "Creating chain %s", sout.c_str() );
     out_streams = new_streams;
+
+    access_out_live.prepare( p_stream, mime, dlna_info_str);
 
     p_out = sout_StreamChainNew( p_stream->p_sout, sout.c_str(), NULL, NULL);
     if (p_out == NULL) {
         msg_Err(p_stream, "could not create sout chain:%s", sout.c_str());
         out_streams.clear();
+        access_out_live.clear();
         return false;
     }
 
@@ -253,6 +612,7 @@ bool sout_stream_sys_t::startSoutChain(sout_stream_t *p_stream,
     if (out_streams.empty())
     {
         stopSoutChain( p_stream );
+        access_out_live.clear();
         return false;
     }
 
@@ -657,16 +1017,8 @@ int sout_stream_sys_t::UpdateOutput( sout_stream_t *p_stream )
         ssout << "}:";
     }
 
-    std::ostringstream ss;
-    ss << "/dlna"
-       << "/" << vlc_tick_now()
-       << "/" << static_cast<uint64_t>( vlc_mrand48() )
-       << "/stream";
-    std::string root_url = ss.str();
-
-    ssout << "http{dst=:" << http_port << root_url
-          << ",mux=" << stream_protocol->profile.mux
-          << ",access=http{mime=" << stream_protocol->profile.mime << "}}";
+    ssout << "http{mux=" << stream_protocol->profile.mux
+          << ",access=dlna-http}";
 
     char *ip = getServerIPAddress();
     if (ip == NULL)
@@ -676,20 +1028,83 @@ int sout_stream_sys_t::UpdateOutput( sout_stream_t *p_stream )
     }
 
     char *uri;
-    if (asprintf(&uri, "http://%s:%d%s", ip, http_port, root_url.c_str()) < 0) {
+    if (asprintf(&uri, "http://%s:%d%s", ip,
+                access_out_live.httpd.m_port,
+                access_out_live.httpd.m_root.c_str()) < 0) {
         return VLC_ENOMEM;
     }
 
-    if ( !startSoutChain( p_stream, new_streams, ssout.str() ) )
+    dlna_org_flags_t flags = DLNA_ORG_FLAG_STREAMING_TRANSFER_MODE |
+                             DLNA_ORG_FLAG_BACKGROUND_TRANSFERT_MODE |
+                             DLNA_ORG_FLAG_CONNECTION_STALL |
+                             DLNA_ORG_FLAG_DLNA_V15;
+    dlna_info_str = dlna_write_protocol_info(
+                            stream_protocol->transport,
+                            stream_protocol->ci,
+                            DLNA_ORG_OPERATION_RANGE,
+                            flags,
+                            stream_protocol->profile
+                            );
+
+    if ( !startSoutChain( p_stream, new_streams, ssout.str(),
+            stream_protocol->profile.mime ) )
         return VLC_EGENERIC;
 
     msg_Dbg(p_stream, "AVTransportURI: %s", uri);
     renderer->Stop();
-    renderer->SetAVTransportURI(uri, *stream_protocol);
+    renderer->SetAVTransportURI(uri, *stream_protocol, dlna_info_str);
     renderer->Play("1");
 
     free(uri);
     return VLC_SUCCESS;
+}
+
+ssize_t AccessWrite(sout_access_out_t *p_access, block_t *p_block)
+{
+    sout_access_out_sys_t *p_sys = reinterpret_cast<sout_access_out_sys_t *>( p_access->p_sys );
+    return p_sys->write(p_access, p_block);
+}
+
+int AccessControl(sout_access_out_t *p_access, int i_query, va_list args)
+{
+    (void) p_access;
+
+    switch (i_query)
+    {
+        case ACCESS_OUT_CONTROLS_PACE:
+            *va_arg(args, bool *) = true;
+            break;
+        default:
+            return VLC_EGENERIC;
+    }
+    return VLC_SUCCESS;
+}
+
+int OpenAccess(vlc_object_t *p_this)
+{
+    sout_access_out_t *p_access = (sout_access_out_t*)p_this;
+
+    sout_access_out_sys_t *p_sys = (sout_access_out_sys_t *)
+        var_InheritAddress(p_access, SOUT_CFG_PREFIX "access-out-sys");
+    if (p_sys == NULL)
+    {
+        msg_Err(p_access, "unable to create access out");
+        return VLC_EGENERIC;
+    }
+
+    p_access->pf_write       = AccessWrite;
+    p_access->pf_control     = AccessControl;
+    p_access->p_sys          = p_sys;
+
+    return VLC_SUCCESS;
+}
+
+void CloseAccess(vlc_object_t *p_this)
+{
+    sout_access_out_t *p_access = (sout_access_out_t*)p_this;
+    sout_access_out_sys_t *p_sys = reinterpret_cast<sout_access_out_sys_t *>( p_access->p_sys );
+
+    p_sys->close();
 }
 
 char *MediaRenderer::getServiceURL(const char* type, const char *service)
@@ -877,7 +1292,8 @@ std::vector<protocol_info_t> MediaRenderer::GetProtocolInfo()
     return supported_protocols;
 }
 
-int MediaRenderer::SetAVTransportURI(const char* uri, const protocol_info_t proto)
+int MediaRenderer::SetAVTransportURI(const char* uri, const protocol_info_t proto,
+                                     std::string dlna_info)
 {
     static const char didl[] =
         "<DIDL-Lite "
@@ -893,22 +1309,11 @@ int MediaRenderer::SetAVTransportURI(const char* uri, const protocol_info_t prot
         "</DIDL-Lite>";
 
     bool audio = proto.profile.media == DLNA_CLASS_AUDIO;
-    dlna_org_flags_t flags = DLNA_ORG_FLAG_STREAMING_TRANSFER_MODE |
-                             DLNA_ORG_FLAG_BACKGROUND_TRANSFERT_MODE |
-                             DLNA_ORG_FLAG_CONNECTION_STALL |
-                             DLNA_ORG_FLAG_DLNA_V15;
-    std::string dlna_protocol = dlna_write_protocol_info(proto.transport,
-                            proto.ci,
-                            DLNA_ORG_OPERATION_RANGE,
-                            flags,
-                            proto.profile
-                            );
-
     char *meta_data;
     if (asprintf(&meta_data, didl,
                 audio ? "Audio" : "Video",
                 audio ? "object.item.audioItem" : "object.item.videoItem",
-                dlna_protocol.c_str(),
+                dlna_info.c_str(),
                 uri) < 0) {
         return VLC_ENOMEM;
     }
@@ -974,6 +1379,7 @@ static void Flush( sout_stream_t *p_stream, void *id )
     if ( id_sys == NULL )
         return;
 
+    p_sys->access_out_live.stop();
     sout_StreamFlush( p_sys->p_out, id_sys );
 }
 
@@ -1014,6 +1420,7 @@ static void Del(sout_stream_t *p_stream, void *_id)
     if (p_sys->out_streams.empty())
     {
         p_sys->stopSoutChain(p_stream);
+        p_sys->access_out_live.clear();
         p_sys->renderer->Stop();
     }
 }
@@ -1022,6 +1429,7 @@ int OpenSout( vlc_object_t *p_this )
 {
     sout_stream_t *p_stream = reinterpret_cast<sout_stream_t*>(p_this);
     sout_stream_sys_t *p_sys = NULL;
+    httpd_host_t *httpd_host = NULL;
 
     config_ChainParse(p_stream, SOUT_CFG_PREFIX, ppsz_sout_options, p_stream->p_cfg);
 
@@ -1035,8 +1443,16 @@ int OpenSout( vlc_object_t *p_this )
         goto error;
     }
 
+    var_Create(p_stream, "http-port", VLC_VAR_INTEGER);
+    var_SetInteger(p_stream, "http-port", http_port);
+    var_Create(p_stream, "http-host", VLC_VAR_STRING);
+    var_SetString(p_stream, "http-host", "");
+    httpd_host = vlc_http_HostNew(VLC_OBJECT(p_stream));
+    if (httpd_host == NULL)
+        goto error;
+
     try {
-        p_sys = new sout_stream_sys_t(http_port, b_supports_video);
+        p_sys = new sout_stream_sys_t(httpd_host, http_port, b_supports_video);
     }
     catch ( const std::exception& ex ) {
         msg_Err( p_stream, "Failed to instantiate sout_stream_sys_t: %s", ex.what() );
@@ -1058,6 +1474,8 @@ int OpenSout( vlc_object_t *p_this )
 
     p_sys->device_protocols = p_sys->renderer->GetProtocolInfo();
 
+    var_Create( p_stream->p_sout, SOUT_CFG_PREFIX "access-out-sys", VLC_VAR_ADDRESS );
+
     p_stream->pf_add     = Add;
     p_stream->pf_del     = Del;
     p_stream->pf_send    = Send;
@@ -1073,6 +1491,8 @@ int OpenSout( vlc_object_t *p_this )
 error:
     free(base_url);
     free(device_url);
+    if (httpd_host)
+        httpd_HostDelete(httpd_host);
     delete p_sys;
     return VLC_EGENERIC;
 }
@@ -1086,4 +1506,4 @@ void CloseSout( vlc_object_t *p_this)
     delete p_sys;
 }
 
-}
+} // namespace DLNA
