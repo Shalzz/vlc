@@ -116,7 +116,7 @@ public:
     }
 
     /// this callback will create the surfaces and FBO used by VLC to perform its rendering
-    static void resize(void* data, unsigned width, unsigned height)
+    static bool resize(void* data, unsigned width, unsigned height)
     {
         VLCVideo* that = static_cast<VLCVideo*>(data);
         if (width != that->m_width || height != that->m_height)
@@ -141,13 +141,14 @@ public:
         GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
 
         if (status != GL_FRAMEBUFFER_COMPLETE) {
-            return;
+            return false;
         }
 
         that->m_width = width;
         that->m_height = height;
 
         glBindFramebuffer(GL_FRAMEBUFFER, that->m_fbo[that->m_idx_render]);
+        return true;
     }
 
     // This callback is called during initialisation.

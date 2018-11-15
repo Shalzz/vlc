@@ -446,9 +446,10 @@ typedef void (*libvlc_gl_cleanup_cb)(void* opaque);
  * \param opaque private pointer passed to the @a libvlc_video_set_opengl_callbacks() [IN]
  * \param width video width in pixel [IN]
  * \param height video height in pixel [IN]
+ * \return true on success
  * \version LibVLC 4.0.0 or later
  */
-typedef void (*libvlc_gl_resize_cb)(void* opaque, unsigned width, unsigned height);
+typedef bool (*libvlc_gl_resize_cb)(void* opaque, unsigned width, unsigned height);
 
 
 /**

@@ -33,7 +33,7 @@ struct vout_display_sys_t
 {
     void (*cleanupCb)(void* opaque);
     bool (*setupCb)(void* opaque);
-    void (*resizeCb)(void* opaque, unsigned, unsigned);
+    bool (*resizeCb)(void* opaque, unsigned, unsigned);
     void (*swapCb)(void* opaque);
     bool (*makeCurrentCb)(void* opaque, bool);
     void* (*getProcAddressCb)(void* opaque, const char *name);
@@ -79,10 +79,13 @@ static void Resize(vlc_gl_t * gl, unsigned w, unsigned h)
         return;
 
     MakeCurrent(gl);
-    sys->resizeCb(sys->opaque, w, h);
+    bool success = sys->resizeCb(sys->opaque, w, h);
     ReleaseCurrent(gl);
-    sys->width = w;
-    sys->height = h;
+    if (success)
+    {
+        sys->width = w;
+        sys->height = h;
+    }
 }
 
 static void Close(vlc_object_t *object)
