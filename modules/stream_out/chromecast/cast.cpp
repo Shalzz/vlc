@@ -159,7 +159,6 @@ struct sout_stream_sys_t
 
 private:
     std::string GetAcodecOption( sout_stream_t *, vlc_fourcc_t *, const audio_format_t *, int );
-    std::string GetVcodecOption( sout_stream_t *, vlc_fourcc_t *, const video_format_t *, int );
     bool UpdateOutput( sout_stream_t * );
 };
 
@@ -895,50 +894,6 @@ bool sout_stream_sys_t::transcodingCanFallback() const
     return transcoding_state != (TRANSCODING_VIDEO|TRANSCODING_AUDIO);
 }
 
-venc_options venc_opt_list[] = {
-#ifdef __APPLE__
-    { .fcc = VLC_CODEC_H264, .get_opt = GetVencAvcodecVTOption },
-#endif
-    { .fcc = VLC_CODEC_H264, .get_opt = GetVencQSVH264Option },
-    { .fcc = VLC_CODEC_H264, .get_opt = GetVencX264Option },
-    { .fcc = VLC_CODEC_VP8,  .get_opt = GetVencVPXOption },
-    { .fcc = VLC_CODEC_H264, .get_opt = NULL },
-};
-
-std::string
-sout_stream_sys_t::GetVcodecOption( sout_stream_t *p_stream, vlc_fourcc_t *p_codec_video,
-                                    const video_format_t *p_vid, int i_quality )
-{
-    std::stringstream ssout;
-    static const char video_maxres_hd[] = "maxwidth=1920,maxheight=1080";
-    static const char video_maxres_720p[] = "maxwidth=1280,maxheight=720";
-
-    ssout << GetVencOption( p_stream, venc_opt_idx, venc_opt_list,
-            ARRAY_SIZE(venc_opt_list), p_codec_video, p_vid, i_quality );
-
-    switch ( i_quality )
-    {
-        case CONVERSION_QUALITY_HIGH:
-        case CONVERSION_QUALITY_MEDIUM:
-            ssout << ( ( p_vid->i_width > 1920 ) ? "width=1920," : "" ) << video_maxres_hd << ',';
-            break;
-        default:
-            ssout << ( ( p_vid->i_width > 1280 ) ? "width=1280," : "" ) << video_maxres_720p << ',';
-    }
-
-    if( p_vid->i_frame_rate == 0 || p_vid->i_frame_rate_base == 0
-     || ( p_vid->i_frame_rate / p_vid->i_frame_rate_base ) > 30 )
-    {
-        /* Even force 24fps if the frame rate is unknown */
-        msg_Warn( p_stream, "lowering frame rate to 24fps" );
-        ssout << "fps=24,";
-    }
-
-    msg_Dbg( p_stream, "Converting video to %.4s", (const char*)p_codec_video );
-
-    return ssout.str();
-}
-
 std::string
 sout_stream_sys_t::GetAcodecOption( sout_stream_t *p_stream, vlc_fourcc_t *p_codec_audio,
                                     const audio_format_t *p_aud, int i_quality )
@@ -1106,8 +1061,9 @@ bool sout_stream_sys_t::UpdateOutput( sout_stream_t *p_stream )
         }
         if ( i_codec_video == 0 && p_original_video )
         {
-            ssout << GetVcodecOption( p_stream, &i_codec_video,
-                                      &p_original_video->video, i_quality );
+            ssout << vlc_sout_renderer_GetVcodecOption( p_stream,
+                                        { VLC_CODEC_H264, VLC_CODEC_VP9 },
+                                        &p_original_video->video, i_quality );
             new_transcoding_state |= TRANSCODING_VIDEO;
         }
         if ( p_original_spu )

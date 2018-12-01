@@ -2,6 +2,7 @@
 #define RENDERER_COMMON_H
 
 #include <string>
+#include <vector>
 
 #include <vlc_common.h>
 #include <vlc_sout.h>
@@ -40,33 +41,8 @@ static const int conversion_quality_list[] = {
     CONVERSION_QUALITY_LOWCPU,
 };
 
-struct venc_options
-{
-    vlc_fourcc_t fcc;
-    std::string (*get_opt)( sout_stream_t *, const video_format_t *, int);
-};
-
 std::string
-GetVencOption( sout_stream_t *p_stream, int venc_opt_idx,
-        venc_options venc_opt_list[], size_t opt_list_length,
-        vlc_fourcc_t *p_codec_video, const video_format_t *p_vid,
-        int i_quality );
-
-std::string GetVencVPXOption( sout_stream_t * /* p_stream */,
-                                      const video_format_t * /* p_vid */,
-                                      int /* i_quality */ );
-
-std::string GetVencQSVH264Option( sout_stream_t * /* p_stream */,
-                                         const video_format_t * /* p_vid */,
-                                         int i_quality );
-
-std::string GetVencX264Option( sout_stream_t * /* p_stream */,
-                                      const video_format_t *p_vid,
-                                      int i_quality );
-#ifdef __APPLE__
-std::string GetVencAvcodecVTOption( sout_stream_t * /* p_stream */,
-                                           const video_format_t * p_vid,
-                                           int i_quality );
-#endif
+vlc_sout_renderer_GetVcodecOption(sout_stream_t *p_stream,
+        std::vector<vlc_fourcc_t> codecs, const video_format_t *p_vid, int i_quality);
 
 #endif /* RENDERER_COMMON_H */
