@@ -53,3 +53,9 @@ build*
 contrib-*
 install-*
 
+modules/codec/webvtt/CSSGrammar.c
+modules/codec/webvtt/CSSGrammar.h
+modules/codec/webvtt/CSSLexer.c
+modules/stream_out/chromecast/cast_channel.pb.cc
+modules/stream_out/chromecast/cast_channel.pb.h
+modules/vlc-qt-check
