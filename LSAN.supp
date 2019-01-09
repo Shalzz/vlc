@@ -1,0 +1,8 @@
+leak:libX11.so
+leak:libxcb.so
+leak:libqsvgicon.so
+leak:libpython3.7m.so
+leak:libdbus-1.so
+leak:libQt5Gui.so
+leak:libQt5Core.so
+leak:libixml.so
