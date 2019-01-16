@@ -96,10 +96,11 @@ static inline void vlc_gl_ReleaseCurrent(vlc_gl_t *gl)
     gl->releaseCurrent(gl);
 }
 
-static inline void vlc_gl_Resize(vlc_gl_t *gl, unsigned w, unsigned h)
+static inline int vlc_gl_Resize(vlc_gl_t *gl, unsigned w, unsigned h)
 {
     if (gl->resize != NULL)
-        gl->resize(gl, w, h);
+        return gl->resize(gl, w, h);
+    return VLC_SUCCESS;
 }
 
 static inline void vlc_gl_Swap(vlc_gl_t *gl)
