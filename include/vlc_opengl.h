@@ -47,7 +47,7 @@ struct vlc_gl_t
 
     int  (*makeCurrent)(vlc_gl_t *);
     void (*releaseCurrent)(vlc_gl_t *);
-    void (*resize)(vlc_gl_t *, unsigned, unsigned);
+    int (*resize)(vlc_gl_t *, unsigned, unsigned);
     void (*swap)(vlc_gl_t *);
     void*(*getProcAddress)(vlc_gl_t *, const char *);
 

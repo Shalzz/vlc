@@ -69,14 +69,14 @@ static void VglSwapBuffers(vlc_gl_t *gl)
     sys->swapCb(sys->opaque);
 }
 
-static void Resize(vlc_gl_t * gl, unsigned w, unsigned h)
+static int Resize(vlc_gl_t * gl, unsigned w, unsigned h)
 {
     vout_display_sys_t *sys = gl->sys;
     if( sys->width == w && sys->height == h )
-        return;
+        return VLC_SUCCESS;
 
     if( !sys->resizeCb )
-        return;
+        return VLC_SUCCESS;
 
     MakeCurrent(gl);
     bool success = sys->resizeCb(sys->opaque, w, h);
@@ -85,7 +85,9 @@ static void Resize(vlc_gl_t * gl, unsigned w, unsigned h)
     {
         sys->width = w;
         sys->height = h;
+        return VLC_SUCCESS;
     }
+    return VLC_EGENERIC;
 }
 
 static void Close(vlc_object_t *object)

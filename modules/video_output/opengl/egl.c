@@ -82,6 +82,7 @@ static void Resize (vlc_gl_t *gl, unsigned width, unsigned height)
     vlc_gl_sys_t *sys = gl->sys;
 
     wl_egl_window_resize(sys->window, width, height, 0, 0);
+    return VLC_SUCCESS;
 }
 #else
 # define Resize (NULL)
